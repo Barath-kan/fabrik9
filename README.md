@@ -64,6 +64,19 @@ REST
 - `GET  /api/runs/{id}/telemetry` — historical samples
 - `GET  /api/health`
 
+## Security & Scope
+
+**`/api` and `/ws` are intentionally unauthenticated.** FABRIK-9 is a
+single-instance public demo, not a multi-tenant service: every viewer shares
+one authoritative simulation, and the control channel (pause/resume/speed/
+fault injection) is meant to be open so anyone can drive the demo. There is no
+login, no per-user state, and no data worth isolating. Deploying this as-is
+behind a public URL is by design.
+
+If you fork this into something multi-tenant or with data worth protecting,
+add auth + rate limiting on the control channel first — it's the first item in
+the roadmap below, and it is a deliberate omission here, not an oversight.
+
 ## Design decisions worth knowing
 
 **Snapshot consistency.** `Simulation.to_dict()` rolls back in-flight
