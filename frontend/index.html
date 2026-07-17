@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FABRIK-9 // Server-Authoritative Factory</title>
+<style>
+  :root {
+    --bg:        #0b1016;
+    --panel:     #121a24;
+    --panel-2:   #0e1620;
+    --line:      #1e2a38;
+    --text:      #c8d6e5;
+    --dim:       #5c7089;
+    --cyan:      #35d0e0;
+    --violet:    #b07af0;
+    --lime:      #a4e05a;
+    --amber:     #e8a33d;
+    --green:     #57d98a;
+    --red:       #e06060;
+    --mono: ui-monospace, "Cascadia Code", "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--mono);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 14px;
+  }
+  .app { display: flex; gap: 14px; align-items: stretch; max-width: 1280px; width: 100%; }
+  .stage {
+    background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px;
+    padding: 10px; flex: 1 1 auto; display: flex; flex-direction: column; gap: 8px; min-width: 0;
+  }
+  .stage-head { display: flex; justify-content: space-between; align-items: baseline; padding: 2px 4px; }
+  .stage-head h1 { font-size: 13px; letter-spacing: 0.18em; color: var(--cyan); font-weight: 600; }
+  .stage-head .sub { font-size: 10px; color: var(--dim); letter-spacing: 0.08em; }
+  canvas#cv {
+    width: 100%; height: auto; display: block;
+    border: 1px solid var(--line); border-radius: 4px; background: #0a0e13;
+  }
+  .controls { display: flex; gap: 8px; align-items: center; font-size: 11px; flex-wrap: wrap; }
+  button {
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.06em;
+    background: var(--panel); color: var(--text); border: 1px solid var(--line);
+    border-radius: 4px; padding: 6px 12px; cursor: pointer;
+  }
+  button:hover { border-color: var(--cyan); color: var(--cyan); }
+  button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
+  button.danger:hover { border-color: var(--red); color: var(--red); }
+  button.active { border-color: var(--amber); color: var(--amber); }
+  .spacer { flex: 1; }
+  .speed { display: flex; gap: 4px; }
+
+  .hud {
+    width: 316px; flex: 0 0 316px; background: var(--panel);
+    border: 1px solid var(--line); border-radius: 6px; padding: 13px;
+    display: flex; flex-direction: column; gap: 11px; font-size: 11px;
+    max-height: 92vh; overflow-y: auto;
+  }
+  .hud h2 {
+    font-size: 10px; letter-spacing: 0.22em; color: var(--dim); font-weight: 600;
+    border-bottom: 1px solid var(--line); padding-bottom: 5px; margin-bottom: 7px;
+  }
+  .squad { display: flex; flex-direction: column; gap: 4px; }
+  .squad button {
+    display: grid; grid-template-columns: 34px 62px 1fr; gap: 8px; align-items: center;
+    text-align: left; padding: 5px 8px; width: 100%;
+  }
+  .squad button.sel { border-color: var(--amber); }
+  .aid { font-weight: 700; }
+  .aid.c0 { color: var(--cyan); } .aid.c1 { color: var(--violet); } .aid.c2 { color: var(--lime); }
+  .ast { color: var(--dim); }
+  .atask { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .util-row { display: grid; grid-template-columns: 86px 1fr 34px; gap: 6px; align-items: center; margin-top: 4px; }
+  .util-row .lbl { color: var(--dim); }
+  .util-row .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .ubar { height: 7px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 3px; overflow: hidden; }
+  .ubar > div { height: 100%; background: var(--cyan); }
+  .util-row.win .ubar > div { background: var(--amber); }
+  .util-row.win .lbl, .util-row.win .num { color: var(--amber); }
+  .kv { display: grid; grid-template-columns: 1fr auto 1fr auto; column-gap: 10px; row-gap: 5px; }
+  .kv .k { color: var(--dim); }
+  .kv .v { text-align: right; color: var(--text); font-variant-numeric: tabular-nums; }
+  canvas#chart { width: 100%; height: 62px; display: block; border: 1px solid var(--line); border-radius: 4px; background: var(--panel-2); }
+  .log {
+    flex: 1; min-height: 100px; max-height: 170px; overflow-y: auto;
+    background: var(--panel-2); border: 1px solid var(--line); border-radius: 4px;
+    padding: 8px; line-height: 1.6; font-size: 10px;
+  }
+  .log .t { color: var(--dim); margin-right: 6px; }
+  .log .ev-build { color: var(--green); }
+  .log .ev-path  { color: var(--cyan); }
+  .log .ev-warn  { color: var(--red); }
+  .log .ev-fix   { color: var(--amber); }
+  @media (max-width: 1000px) {
+    .app { flex-direction: column; }
+    .hud { width: 100%; flex: 1 1 auto; max-height: none; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="stage">
+    <div class="stage-head">
+      <h1>FABRIK-9 // SERVER-AUTHORITATIVE FACTORY</h1>
+      <span class="sub"><span id="connBadge" style="color:var(--red)">&#9679; CONNECTING </span>&middot; FASTAPI &middot; WEBSOCKET 30FPS &middot; POSTGRES &middot; SEED <span id="seedLbl">—</span></span>
+    </div>
+    <canvas id="cv" width="840" height="560"></canvas>
+    <div class="controls">
+      <button id="btnPause">PAUSE</button>
+      <button id="btnReset">RESET</button>
+      <button id="btnSeed">NEW SEED</button>
+      <button id="btnSave">SAVE</button>
+      <select id="loadSel" style="background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:4px;padding:5px 8px;font-family:var(--mono);font-size:11px;max-width:170px"><option value="">LOAD SNAPSHOT…</option></select>
+      <button id="btnFault" class="danger">INJECT FAULT</button>
+      <button id="btnChaos" class="danger">CHAOS: OFF</button>
+      <div class="spacer"></div>
+      <span style="color:var(--dim)">SPEED</span>
+      <div class="speed">
+        <button data-speed="1" class="active">1x</button>
+        <button data-speed="2">2x</button>
+        <button data-speed="4">4x</button>
+        <button data-speed="8">8x</button>
+      </div>
+    </div>
+  </div>
+
+  <aside class="hud">
+    <div>
+      <h2>AGENT SQUAD</h2>
+      <div class="squad" id="squad"></div>
+    </div>
+    <div>
+      <h2>DECISION TRACE &mdash; <span id="selLbl">A1</span> (UTILITY SCORES)</h2>
+      <div id="utilBox"><span style="color:var(--dim)">Awaiting first auction…</span></div>
+    </div>
+    <div>
+      <h2>PRODUCTION &mdash; GEARS / MIN (SIM)</h2>
+      <canvas id="chart" width="288" height="62"></canvas>
+    </div>
+    <div>
+      <h2>TELEMETRY</h2>
+      <div class="kv">
+        <span class="k">Gears stock</span><span class="v" id="hGears">0</span>
+        <span class="k">Gears/min</span><span class="v" id="hRate">0</span>
+        <span class="k">Ore delivered</span><span class="v" id="hOre">0</span>
+        <span class="k">Assemblers</span><span class="v" id="hAsm">1</span>
+        <span class="k">Miners</span><span class="v" id="hMin">0</span>
+        <span class="k">Belts</span><span class="v" id="hBelt">0</span>
+        <span class="k">Tasks done</span><span class="v" id="hTasks">0</span>
+        <span class="k">Sim tick</span><span class="v" id="hTick">0</span>
+      </div>
+    </div>
+    <div>
+      <h2>RELIABILITY</h2>
+      <div class="kv">
+        <span class="k">Active faults</span><span class="v" id="hFaults">0</span>
+        <span class="k">Repaired</span><span class="v" id="hFixed">0</span>
+        <span class="k">MTTR</span><span class="v" id="hMTTR">—</span>
+        <span class="k">Line uptime</span><span class="v" id="hUp">100%</span>
+      </div>
+    </div>
+    <div>
+      <h2>SEARCH INSTRUMENTATION</h2>
+      <div class="kv">
+        <span class="k">A* runs</span><span class="v" id="hRuns">0</span>
+        <span class="k">Nodes expanded</span><span class="v" id="hNodes">0</span>
+        <span class="k">Heap ops</span><span class="v" id="hHeap">0</span>
+        <span class="k">Avg path len</span><span class="v" id="hPath">0</span>
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;flex:1;min-height:0">
+      <h2>EVENT LOG</h2>
+      <div class="log" id="hudLog"></div>
+    </div>
+  </aside>
+</div>
+
+<script src="client.js"></script>
+</body>
+</html>

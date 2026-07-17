@@ -1,0 +1,5 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+sqlalchemy>=2.0
+aiosqlite>=0.20
+asyncpg>=0.29     # only needed when DATABASE_URL points at PostgreSQL
