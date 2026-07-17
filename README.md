@@ -1,7 +1,6 @@
 # FABRIK-9 Full-Stack — Server-Authoritative Multi-Agent Factory
 
-<!-- Replace OWNER/REPO with your GitHub slug once pushed. -->
-[![CI](https://github.com/OWNER/REPO/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/REPO/actions/workflows/ci.yml)
+[![CI](https://github.com/Barath-kan/fabrik9/actions/workflows/ci.yml/badge.svg)](https://github.com/Barath-kan/fabrik9/actions/workflows/ci.yml)
 
 The browser version of FABRIK-9 converted to a production-shaped full-stack
 application: the simulation now runs **on the server** (Python/FastAPI), the
