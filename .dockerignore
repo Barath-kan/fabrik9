@@ -1,0 +1,31 @@
+# Keep the build context small and reproducible: never ship local state,
+# caches, VCS, or docs into the image.
+.git
+.github
+.gitignore
+.dockerignore
+Dockerfile
+docker-compose.yml
+
+# Python caches / local envs
+__pycache__/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+**/.pytest_cache/
+.venv/
+venv/
+.coverage
+coverage.xml
+htmlcov/
+
+# Local databases (never bake a dev DB into the image)
+*.db
+*.sqlite
+*.sqlite3
+
+# Docs / analysis artifacts not needed at runtime
+PERF_REPORT.md
+graphify-out/
+*.docx
+*.pdf

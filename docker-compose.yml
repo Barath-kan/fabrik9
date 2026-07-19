@@ -1,0 +1,55 @@
+# One service: the single FastAPI process (API + WebSocket + static frontend).
+# `docker compose up --build` and open http://localhost:8000
+#
+# SQLite is the default and needs no external database. To use PostgreSQL,
+# override DATABASE_URL (see the commented db service at the bottom for a
+# ready-to-uncomment example) — no code changes, one env var.
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      # SQLite on the named volume by default; override to point at Postgres.
+      DATABASE_URL: ${DATABASE_URL:-sqlite+aiosqlite:////data/fabrik9.db}
+      # App-recognized knobs; override from the host env if you want.
+      FABRIK_SEED: ${FABRIK_SEED:-1337}
+      FABRIK_LOG_LEVEL: ${FABRIK_LOG_LEVEL:-INFO}
+    volumes:
+      # Persist the default SQLite database across container restarts.
+      - fabrik9-data:/data
+    restart: unless-stopped
+
+volumes:
+  fabrik9-data:
+
+# ---------------------------------------------------------------------------
+# Optional PostgreSQL. Uncomment this block AND the depends_on below, then set
+#   DATABASE_URL=postgresql+asyncpg://fabrik9:fabrik9@db:5432/fabrik9
+# (the SQLite volume is simply ignored when DATABASE_URL points elsewhere).
+#
+#   db:
+#     image: postgres:16-alpine
+#     environment:
+#       POSTGRES_USER: fabrik9
+#       POSTGRES_PASSWORD: fabrik9
+#       POSTGRES_DB: fabrik9
+#     volumes:
+#       - fabrik9-pg:/var/lib/postgresql/data
+#     healthcheck:
+#       test: ["CMD-SHELL", "pg_isready -U fabrik9"]
+#       interval: 5s
+#       timeout: 3s
+#       retries: 10
+#
+# Add under app:
+#     depends_on:
+#       db:
+#         condition: service_healthy
+#
+# Add under top-level volumes:
+#   fabrik9-pg:
+# ---------------------------------------------------------------------------
