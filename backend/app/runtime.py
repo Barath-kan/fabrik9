@@ -11,7 +11,16 @@ Design notes worth defending in an interview:
 - Static world data (the grid) is only re-sent when `structure_version`
   changes; the per-frame message carries only dynamic entities. This keeps
   steady-state bandwidth to a few KB/frame.
-- Broadcast failures never crash the loop; dead sockets are pruned.
+- I/O failures are recovered from, never fatal: a broadcast error prunes the
+  dead socket, and a persistence error is logged and retried next interval
+  without advancing the persist cursors (so no telemetry/event is ever lost).
+- Simulation-core failures are the deliberate opposite. `sim.step()` is
+  deterministic and bit-reproducible (the regression suite depends on it), so
+  an exception there is a real logic bug, not a transient hiccup — it is *not*
+  swallowed. It propagates and crashes the loop loudly (logged CRITICAL by the
+  task's done-callback) rather than let the loop keep running on partially
+  mutated, corrupt state. Only that — and cancellation (shutdown) — stop the
+  loop.
 """
 
 import asyncio
@@ -21,6 +30,9 @@ from .sim.core import Simulation
 from . import config as C
 from .db import SessionLocal
 from . import persistence
+from .logging_setup import get_logger
+
+log = get_logger("runtime")
 
 TELEMETRY_EVERY_TICKS = 300      # one sample every 10 simulated seconds
 
@@ -44,10 +56,27 @@ class SimulationManager:
         async with SessionLocal() as session:
             self.run_id = await persistence.create_run(session, self.sim.seed)
         self._task = asyncio.create_task(self._loop())
+        self._task.add_done_callback(self._on_loop_done)
+        log.info("manager started", extra={"run_id": self.run_id,
+                                            "seed": self.sim.seed})
+
+    def _on_loop_done(self, task: asyncio.Task):
+        """Surface a fatal loop crash loudly. A clean shutdown cancels the
+        task (expected); any other exit carries an exception — almost always
+        from the un-guarded sim core — and must not die silently as an
+        'exception never retrieved' warning."""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            log.critical("tick loop crashed — simulation halted",
+                         extra={"run_id": self.run_id, "tick": self.sim.tick},
+                         exc_info=exc)
 
     async def stop(self):
         if self._task:
             self._task.cancel()
+        log.info("manager stopped", extra={"run_id": self.run_id})
 
     async def reset(self, seed: int):
         self.sim = Simulation(seed)
@@ -57,6 +86,7 @@ class SimulationManager:
         self._client_versions.clear()
         async with SessionLocal() as session:
             self.run_id = await persistence.create_run(session, seed)
+        log.info("run reset", extra={"run_id": self.run_id, "seed": seed})
 
     async def load_snapshot_state(self, state: dict, run_id: str):
         self.sim = Simulation.from_dict(state)
@@ -65,6 +95,8 @@ class SimulationManager:
         self._persisted_log_seq = self.sim.log_seq
         self._last_telemetry_tick = self.sim.tick
         self._client_versions.clear()
+        log.info("snapshot loaded", extra={"run_id": run_id,
+                                           "tick": self.sim.tick})
 
     # ---------------- the loop ----------------
 
@@ -81,16 +113,28 @@ class SimulationManager:
             while acc >= tick_dt:
                 acc -= tick_dt
                 if not self.paused:
+                    # NOT guarded: the sim core is deterministic and
+                    # bit-reproducible. An exception here is a real logic bug,
+                    # so let it propagate and crash the loop loudly rather than
+                    # keep running on partially-mutated, corrupt state.
                     for _ in range(self.speed):
                         self.sim.step()
                     stepped = True
-            # Broadcast exactly once per tick batch (30 fps while running);
-            # while paused, a 4 Hz heartbeat keeps clients' HUDs honest.
-            if self.clients and (stepped or now - last_broadcast > 0.25):
-                await self._broadcast()
-                last_broadcast = now
-            if stepped:
-                await self._maybe_persist()
+            # I/O only — a dropped socket or a transient DB error is expected
+            # to fail occasionally and must never stop the simulation.
+            try:
+                # Broadcast exactly once per tick batch (30 fps while running);
+                # while paused, a 4 Hz heartbeat keeps clients' HUDs honest.
+                if self.clients and (stepped or now - last_broadcast > 0.25):
+                    await self._broadcast()
+                    last_broadcast = now
+                if stepped:
+                    await self._maybe_persist()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("tick loop I/O failed; recovering",
+                              extra={"run_id": self.run_id, "tick": self.sim.tick})
             await asyncio.sleep(tick_dt / 2)
 
     # ---------------- messages ----------------
@@ -164,6 +208,9 @@ class SimulationManager:
         for ws in dead:
             self.clients.discard(ws)
             self._client_versions.pop(ws, None)
+        if dead:
+            log.warning("pruned dead sockets",
+                        extra={"pruned": len(dead), "clients": len(self.clients)})
 
     # ---------------- persistence hooks ----------------
 
@@ -171,14 +218,30 @@ class SimulationManager:
         s = self.sim
         if s.tick - self._last_telemetry_tick < TELEMETRY_EVERY_TICKS:
             return
-        self._last_telemetry_tick = s.tick
+        # Compute what we intend to persist WITHOUT mutating the bookkeeping
+        # cursors yet. The cursors advance only after the DB commit succeeds —
+        # otherwise a failed write would leave them advanced and those events
+        # would be skipped forever (a silent, permanent gap in the event log).
         new_logs = [l for i, l in enumerate(s.log)
                     if s.log_seq - len(s.log) + i >= self._persisted_log_seq]
         seq_base = self._persisted_log_seq
-        self._persisted_log_seq = s.log_seq
-        async with SessionLocal() as session:
-            await persistence.record_sample(session, self.run_id, s)
-            await persistence.record_events(session, self.run_id, new_logs, seq_base)
+        tick, next_seq = s.tick, s.log_seq
+        try:
+            async with SessionLocal() as session:
+                await persistence.record_sample(session, self.run_id, s)
+                await persistence.record_events(session, self.run_id,
+                                                new_logs, seq_base)
+        except Exception:
+            # Leave the cursors untouched so the next interval retries this
+            # batch. The `async with` already rolled back the open transaction,
+            # so no partial rows survive.
+            log.exception("telemetry persist failed; will retry",
+                          extra={"run_id": self.run_id, "tick": tick})
+            return
+        self._last_telemetry_tick = tick
+        self._persisted_log_seq = next_seq
+        log.info("db write", extra={"run_id": self.run_id, "tick": tick,
+                                    "events": len(new_logs)})
 
 
 def _task_label(a):

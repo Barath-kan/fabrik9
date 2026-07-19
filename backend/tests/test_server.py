@@ -160,6 +160,155 @@ async def test_rolled_back_run_leaves_no_trace():
         assert found is None, "rolled-back run must not persist"
 
 
+
+async def test_persist_failure_does_not_advance_cursors_or_lose_events(monkeypatch):
+    """Force the DB write to fail *inside* `_maybe_persist` and assert the
+    manager's in-memory cursors stay put, no event rows leak, and the very
+    same events are durably written once the DB recovers — i.e. a mid-write
+    failure never drops an event or corrupts the persist bookkeeping."""
+    from app import runtime
+
+    mgr = SimulationManager(seed=1337)
+    async with SessionLocal() as session:
+        mgr.run_id = await persistence.create_run(session, mgr.sim.seed)
+    mgr.sim.run(TELEMETRY_EVERY_TICKS + 10)     # cross the persist threshold
+
+    seq_before = mgr._persisted_log_seq
+    tick_before = mgr._last_telemetry_tick
+
+    # Blow up the event write partway through the persist (after the sample).
+    def boom(*a, **k):
+        raise RuntimeError("event store unavailable")
+    monkeypatch.setattr(persistence, "record_events", boom)
+
+    await mgr._maybe_persist()                  # must swallow, not raise
+
+    # Cursors untouched -> the batch will be retried, nothing skipped.
+    assert mgr._persisted_log_seq == seq_before, "log cursor must not advance on failure"
+    assert mgr._last_telemetry_tick == tick_before, "telemetry cursor must not advance"
+
+    # No event rows survived the failed (rolled-back) batch.
+    async with SessionLocal() as session:
+        rows = (await session.execute(
+            select(models.EventLog).where(models.EventLog.run_id == mgr.run_id)
+        )).scalars().all()
+    assert rows == [], "failed event batch must leave no partial rows"
+
+    # DB recovers: the retry writes exactly the events the failed attempt held.
+    monkeypatch.undo()
+    await mgr._maybe_persist()
+
+    assert mgr._persisted_log_seq == mgr.sim.log_seq, "cursor advances after success"
+    async with SessionLocal() as session:
+        rows = (await session.execute(
+            select(models.EventLog).where(models.EventLog.run_id == mgr.run_id)
+        )).scalars().all()
+    assert rows, "recovered write must durably persist the previously-failed events"
+
+
+async def test_tick_loop_survives_a_persist_failure():
+    """A transient DB error in the persist path must never kill the
+    authoritative loop — the simulation keeps stepping and broadcasting."""
+    mgr = SimulationManager(seed=1337)
+    async with SessionLocal() as session:
+        mgr.run_id = await persistence.create_run(session, mgr.sim.seed)
+
+    calls = {"n": 0}
+
+    async def flaky_persist():
+        calls["n"] += 1
+        raise RuntimeError("db down")
+
+    mgr._maybe_persist = flaky_persist
+    ws = FakeWS()
+    mgr.clients = {ws}
+
+    task = asyncio.create_task(mgr._loop())
+    await asyncio.sleep(0.3)
+    tick_mid = mgr.sim.tick
+    await asyncio.sleep(0.3)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert calls["n"] > 0, "persist should have been attempted (and failed)"
+    assert mgr.sim.tick > tick_mid, "loop must keep stepping despite persist errors"
+    assert ws.sent, "loop must keep broadcasting despite persist errors"
+
+
+async def test_tick_loop_does_not_swallow_sim_core_failure():
+    """The opposite guarantee to the persist test: a failure in the *sim core*
+    is a real logic bug, not a transient I/O hiccup. The loop must NOT catch it
+    and keep running on partially-mutated state (that would silently corrupt the
+    run and break bit-reproducibility) — it must propagate and end the task in a
+    failed state."""
+    mgr = SimulationManager(seed=1337)
+    async with SessionLocal() as session:
+        mgr.run_id = await persistence.create_run(session, mgr.sim.seed)
+
+    boom = RuntimeError("sim core invariant violated")
+
+    def exploding_step():
+        raise boom
+    mgr.sim.step = exploding_step        # deterministic core now throws
+
+    task = asyncio.create_task(mgr._loop())
+    with pytest.raises(RuntimeError) as exc:
+        await asyncio.wait_for(task, timeout=2.0)
+
+    assert exc.value is boom, "sim-core failure must propagate unchanged, not be recovered"
+    assert task.done() and not task.cancelled(), "task must end failed, not be swallowed"
+
+
+# --------------------------------------------------------------------------
+# Phase 2 — a client drop leaves no orphaned agent state or hung task
+# --------------------------------------------------------------------------
+
+def test_client_disconnect_leaves_no_orphaned_agent_state():
+    """Agents and their in-flight tasks are server-owned, not per-connection.
+    A client that connects mid-run and drops must leave the client set empty
+    while the simulation's agents keep the tasks/reservations they held."""
+    from app.main import app, manager
+
+    manager.sim.run(400)                        # agents acquire tasks + reservations
+    tasks_before = [a.task for a in manager.sim.agents]
+    reserved_before = dict(manager.sim.reserved)
+    tick_before = manager.sim.tick
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as ws:
+            ws.receive_json()                   # world
+            ws.receive_json()                   # state
+        # socket closed -> server ran its finally-block cleanup
+
+    assert manager.clients == set(), "dropped socket must be removed from the hub"
+    assert manager._client_versions == {}, "no per-client version state may linger"
+    # Nothing the client touched belongs to the client: agent tasks and the
+    # reservation table are exactly as the sim left them (or further advanced).
+    assert [a.task for a in manager.sim.agents] == tasks_before
+    assert manager.sim.reserved == reserved_before
+    assert manager.sim.tick >= tick_before, "sim keeps running independent of clients"
+
+
+def test_ws_endpoint_ignores_malformed_frame_and_keeps_serving():
+    """A non-JSON / malformed control frame must not tear down the socket —
+    the client stays connected and a subsequent valid action still applies."""
+    import time
+    from app.main import app, manager
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as ws:
+            ws.receive_json()                   # world
+            ws.receive_json()                   # state
+            ws.send_text("this is not json {{{")   # malformed -> ignored
+            ws.send_json({"action": "pause"})      # still processed
+
+            deadline = time.time() + 3.0
+            while time.time() < deadline and manager.paused is not True:
+                time.sleep(0.02)
+            assert manager.paused is True, "valid action after a bad frame still applies"
+
+
 # --------------------------------------------------------------------------
 # Persistence happy-path (raises coverage of persistence + models + db)
 # --------------------------------------------------------------------------

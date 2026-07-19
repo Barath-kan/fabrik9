@@ -18,6 +18,9 @@ transaction, and all agents resume from PLAN.
 from . import pathfinding
 from .. import config as C
 from ..config import T
+from ..logging_setup import get_logger
+
+log = get_logger("sim")
 
 MOD = 2147483647
 MUL = 16807
@@ -130,6 +133,7 @@ class Simulation:
         self.agents = [Agent(i, *starts[i]) for i in range(C.N_AGENTS)]
 
         self.add_log(f"World seed {seed} — squad of {C.N_AGENTS} agents online.", "")
+        log.info("agents spawned", extra={"seed": seed, "agents": C.N_AGENTS})
 
     # ---------------- helpers ----------------
 
@@ -289,11 +293,17 @@ class Simulation:
         cands = sorted(self.candidate_tasks(ag), key=lambda t: -t["score"])
         ag.last_decision = [{"label": t["label"], "score": t["score"]}
                             for t in cands[:4]]
+        log.debug("auction start", extra={"agent": ag.id + 1, "tick": self.tick,
+                                          "candidates": len(cands)})
         for t in cands:
             if self.try_assign(ag, t):
+                log.debug("auction resolved",
+                          extra={"agent": ag.id + 1, "tick": self.tick,
+                                 "task": t["type"], "score": round(t["score"], 1)})
                 return
         ag.state = "IDLE"
         ag.timer = 30
+        log.debug("auction idle", extra={"agent": ag.id + 1, "tick": self.tick})
 
     def try_assign(self, ag, t):
         k = t["type"]
@@ -638,6 +648,8 @@ class Simulation:
         self.grid[b["y"]][b["x"]]["type"] = T.EMPTY
         self.structure_version += 1
         self.add_log(f"FAULT INJECTED: belt severed at ({b['x']},{b['y']})", "ev-warn")
+        log.warning("fault injected",
+                    extra={"fault_x": b["x"], "fault_y": b["y"], "tick": self.tick})
         return True
 
     def integrity_scan(self):
