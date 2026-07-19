@@ -26,6 +26,11 @@ def astar(sim, sx, sy, goal_test, h_target, self_agent=None, cost_fn=None):
     came = {}
     g_score = {(sx, sy): 0}
 
+    # Agent positions are frozen for the duration of one search, so snapshot
+    # them once instead of scanning the agent list per neighbor expansion.
+    occupied = (None if cost_fn is not None
+                else {(a.x, a.y) for a in sim.agents if a is not self_agent})
+
     def h(x, y):
         return abs(x - hx) + abs(y - hy)
 
@@ -55,7 +60,7 @@ def astar(sim, sx, sy, goal_test, h_target, self_agent=None, cost_fn=None):
             c = cost_fn(nx, ny) if cost_fn else sim.base_cost(nx, ny)
             if c == float("inf"):
                 continue
-            if cost_fn is None and sim.agent_at(nx, ny, self_agent) is not None:
+            if occupied is not None and (nx, ny) in occupied:
                 c += 6
             ng = cg + c
             if ng < g_score.get((nx, ny), float("inf")):
