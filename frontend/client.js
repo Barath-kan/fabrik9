@@ -345,22 +345,37 @@ function updateHUD() {
   const d = agSel.decision;
   const pick = agSel.decision_pick;
   if (d.length) {
-    const max = Math.max(...d.map(x => x.score), 1);
-    const winIdx = pick ? pick.rank : 0;
-    let html = d.map((x, i) =>
-      `<div class="util-row ${i===winIdx?'win':''}">
-         <span class="lbl">${x.label}</span>
-         <span class="ubar"><div style="width:${Math.max(0, x.score/max*100)}%"></div></span>
-         <span class="num">${x.score.toFixed(0)}</span>
-       </div>`).join("");
-    if (pick) {
-      html += `<div class="pick-why"><span class="k">CHOSEN:</span> ` +
-              `<span class="win-lbl">${pick.label}</span> &mdash; ${pick.reason}` +
-              pick.rejected.map(r =>
-                `<br><span class="k">PASSED OVER:</span> ${r.label} ` +
-                `(${r.score}) &mdash; ${r.why}`).join("") +
-              `</div>`;
-    }
+    // Evaluation-pipeline tree. Three verdicts, deliberately not two:
+    // the auction walks candidates best-first and STOPS at the first
+    // success, so candidates below the winner were never evaluated —
+    // showing them as reachable or blocked would claim a verdict the
+    // algorithm never computed.
+    const winIdx = pick ? pick.rank : -1;
+    const nodes = d.map((x, i) => {
+      if (i === winIdx)
+        return { cls: "t-ok", icon: "&#10003;", label: x.label, score: x.score,
+                 verdict: `attempted &rarr; succeeded &mdash; ${pick.reason}` };
+      if (!pick || i < winIdx)        // pick null: auction fell all the way through
+        return { cls: "t-rej", icon: "&#10007;", label: x.label, score: x.score,
+                 verdict: "attempted &rarr; rejected &mdash; unreachable" };
+      return { cls: "t-na", icon: "&#9675;", label: x.label, score: x.score,
+               verdict: "not attempted &mdash; higher-scored candidate already succeeded" };
+    });
+    // Winner ranked below the visible top-4 (all of them unroutable): show it.
+    if (pick && winIdx >= d.length)
+      nodes.push({ cls: "t-ok", icon: "&#10003;", label: pick.label,
+                   score: pick.score,
+                   verdict: `attempted &rarr; succeeded &mdash; ${pick.reason}` });
+    let html = `<div class="dtree"><div class="troot">AUCTION &mdash; ` +
+               `best-first, stops at first success</div>` +
+      nodes.map((n, i) =>
+        `<div class="tnode ${n.cls}">
+           <span class="br">${i === nodes.length - 1 ? "&#9492;&#9472;" : "&#9500;&#9472;"}</span>
+           <span class="ticon">${n.icon}</span>
+           <span class="tlbl">${n.label}</span>
+           <span class="tscore">${n.score.toFixed(1)}</span>
+           <div class="tverdict">${n.verdict}</div>
+         </div>`).join("") + `</div>`;
     if (agSel.idle_reason) {
       html += `<div class="pick-why idle-why">${agSel.idle_reason}</div>`;
     }

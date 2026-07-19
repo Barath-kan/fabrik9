@@ -104,6 +104,20 @@
   .pick-why .k { color: var(--dim); letter-spacing: 0.08em; }
   .pick-why .win-lbl { color: var(--amber); }
   .idle-why { color: var(--dim); font-style: italic; }
+  .dtree { font-size: 10.5px; line-height: 1.5; }
+  .dtree .troot { color: var(--dim); letter-spacing: 0.06em; }
+  .tnode {
+    display: grid; grid-template-columns: 16px 13px 1fr auto;
+    column-gap: 4px; align-items: baseline; margin-top: 3px;
+  }
+  .tnode .br { color: var(--line); }
+  .tnode .tscore { font-variant-numeric: tabular-nums; }
+  .tnode .tverdict { grid-column: 3 / 5; font-size: 9.5px; color: var(--dim); }
+  .tnode.t-ok  .ticon, .tnode.t-ok  .tlbl, .tnode.t-ok  .tscore { color: var(--green); }
+  .tnode.t-rej .ticon, .tnode.t-rej .tlbl, .tnode.t-rej .tscore { color: var(--red); }
+  .tnode.t-na  .ticon, .tnode.t-na  .tlbl, .tnode.t-na  .tscore { color: var(--dim); }
+  .tnode.t-ok  .tverdict { color: var(--green); opacity: 0.75; }
+  .tnode.t-rej .tverdict { color: var(--red); opacity: 0.75; }
   .tl { min-height: 90px; max-height: 150px; flex: 0 1 auto; }
   .tl .tag {
     display: inline-block; min-width: 56px; margin-right: 6px;
@@ -164,7 +178,7 @@
       <div class="squad" id="squad"></div>
     </div>
     <div>
-      <h2>DECISION TRACE &mdash; <span id="selLbl">A1</span> (UTILITY SCORES)</h2>
+      <h2>DECISION TRACE &mdash; <span id="selLbl">A1</span> (AUCTION PIPELINE)</h2>
       <div id="utilBox"><span style="color:var(--dim)">Awaiting first auction…</span></div>
     </div>
     <div>
