@@ -30,7 +30,7 @@ function connect() {
   ws.onclose = () => { setConn(false); setTimeout(connect, 1000); };
   ws.onmessage = e => {
     const msg = JSON.parse(e.data);
-    if (msg.type === "world") { world = msg; $("seedLbl").textContent = msg.seed; }
+    if (msg.type === "world") { world = msg; $("seedLbl").textContent = msg.seed; if (msg.db) $("dbLbl").textContent = msg.db.toUpperCase(); }
     else if (msg.type === "state") { state = msg; updateHUD(); updateTimeline(msg); updateGoals(msg); updateNarration(msg); }
   };
 }
@@ -408,6 +408,43 @@ function updateHUD() {
   document.querySelectorAll(".speed button").forEach(b =>
     b.classList.toggle("active", +b.dataset.speed === s.speed));
 }
+
+/* ---------------- tile inspector ----------------
+   Hover tooltip fed entirely by world.grid (already client-side, no extra
+   traffic). Per mousemove: one rect read, integer math, and a string
+   compare — the DOM is only touched when the label actually changes. */
+
+const tileTip = $("tileTip");
+const BELT_ARROWS = ["→", "←", "↓", "↑"];  // matches DIRS order
+let tipHTML = "";
+
+function tileLabel(t, d, amt) {
+  switch (t) {
+    case T.ORE:   return amt > 0 ? `Ore deposit — ${amt}/${ORE_PER_TILE} ore remaining`
+                                 : "Ore deposit — depleted";
+    case T.ROCK:  return "Rock — impassable";
+    case T.BELT:  return `Belt — carries ore ${BELT_ARROWS[d]}`;
+    case T.MINER: return "Miner — automated ore extraction";
+    case T.ASM:   return "Assembler — crafts gears from delivered ore";
+    default:      return "Empty — walkable floor";
+  }
+}
+
+cv.addEventListener("mousemove", e => {
+  if (!world) return;
+  const r = cv.getBoundingClientRect();
+  const x = Math.floor((e.clientX - r.left) * (cv.width / r.width) / TS);
+  const y = Math.floor((e.clientY - r.top) * (cv.height / r.height) / TS);
+  if (x < 0 || y < 0 || x >= world.cols || y >= world.rows) { hideTileTip(); return; }
+  tileTip.style.left = (e.clientX + 14) + "px";
+  tileTip.style.top = (e.clientY + 14) + "px";
+  tileTip.style.display = "block";
+  const [t, d, amt] = world.grid[y][x];
+  const html = `<span class="coord">(${x},${y})</span>${tileLabel(t, d, amt)}`;
+  if (html !== tipHTML) { tipHTML = html; tileTip.innerHTML = html; }
+});
+cv.addEventListener("mouseleave", hideTileTip);
+function hideTileTip() { tileTip.style.display = "none"; }
 
 /* ---------------- controls ---------------- */
 

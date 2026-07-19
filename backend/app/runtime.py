@@ -28,7 +28,7 @@ import time
 
 from .sim.core import Simulation
 from . import config as C
-from .db import SessionLocal
+from .db import SessionLocal, engine
 from . import persistence
 from .logging_setup import get_logger
 
@@ -145,6 +145,7 @@ class SimulationManager:
             "type": "world",
             "version": s.structure_version,
             "seed": s.seed,
+            "db": engine.dialect.name,
             "cols": C.COLS, "rows": C.ROWS,
             "grid": [[[t["type"], t["dir"], t["amount"]] for t in row]
                      for row in s.grid],

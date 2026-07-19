@@ -133,6 +133,12 @@
     padding: 7px 10px; font-size: 11px; line-height: 1.55; min-height: 34px;
   }
   .narration::before { content: "\25C9 AI  "; color: var(--violet); letter-spacing: 0.1em; font-size: 9px; }
+  .tile-tip {
+    position: fixed; display: none; pointer-events: none; z-index: 10;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 4px;
+    padding: 4px 8px; font-size: 10px; color: var(--text); white-space: nowrap;
+  }
+  .tile-tip .coord { color: var(--dim); margin-right: 6px; }
   .goals .goal { line-height: 1.8; font-size: 10.5px; }
   .goal.g-red   { color: var(--red); }
   .goal.g-amber { color: var(--amber); }
@@ -149,9 +155,10 @@
   <div class="stage">
     <div class="stage-head">
       <h1>FABRIK-9 // SERVER-AUTHORITATIVE FACTORY</h1>
-      <span class="sub"><span id="connBadge" style="color:var(--red)">&#9679; CONNECTING </span>&middot; FASTAPI &middot; WEBSOCKET 30FPS &middot; POSTGRES &middot; SEED <span id="seedLbl">—</span></span>
+      <span class="sub"><span id="connBadge" style="color:var(--red)">&#9679; CONNECTING </span>&middot; FASTAPI &middot; WEBSOCKET 30FPS &middot; <span id="dbLbl">&#8212;</span> &middot; SEED <span id="seedLbl">—</span></span>
     </div>
     <canvas id="cv" width="840" height="560"></canvas>
+    <div class="tile-tip" id="tileTip"></div>
     <div class="controls">
       <button id="btnPause">PAUSE</button>
       <button id="btnReset">RESET</button>
