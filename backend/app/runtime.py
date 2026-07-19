@@ -166,6 +166,8 @@ class SimulationManager:
                 "facing": list(a.facing),
                 "path": [list(p) for p in a.path],
                 "decision": a.last_decision,
+                "decision_pick": a.decision_pick,
+                "idle_reason": a.idle_reason,
                 "task": _task_label(a),
             } for a in s.agents],
             "belt_items": [[b["x"], b["y"], round(b["prog"], 3)]

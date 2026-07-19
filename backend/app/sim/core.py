@@ -29,7 +29,8 @@ MUL = 16807
 class Agent:
     __slots__ = ("id", "x", "y", "facing", "state", "task", "path", "dest",
                  "cargo", "timer", "wait_count", "build_queue", "build_idx",
-                 "plan", "last_decision", "tasks_done", "taboo_key", "taboo_until")
+                 "plan", "last_decision", "decision_pick", "idle_reason",
+                 "tasks_done", "taboo_key", "taboo_until")
 
     def __init__(self, i, x, y):
         self.id = i
@@ -46,6 +47,8 @@ class Agent:
         self.build_idx = 0
         self.plan = None
         self.last_decision = []
+        self.decision_pick = None
+        self.idle_reason = None
         self.tasks_done = 0
         self.taboo_key = None
         self.taboo_until = 0
@@ -295,14 +298,36 @@ class Simulation:
                             for t in cands[:4]]
         log.debug("auction start", extra={"agent": ag.id + 1, "tick": self.tick,
                                           "candidates": len(cands)})
-        for t in cands:
+        for i, t in enumerate(cands):
             if self.try_assign(ag, t):
+                # Record-only explainability metadata: which candidate won,
+                # why, and who it beat. No RNG, no control flow — the auction
+                # itself is unchanged (determinism fingerprint depends on it).
+                ag.decision_pick = {
+                    "label": t["label"], "type": t["type"],
+                    "score": round(t["score"], 1), "rank": i, "tick": self.tick,
+                    "reason": ("highest utility score" if i == 0 else
+                               f"{i} higher-scored candidate(s) unroutable"),
+                    "rejected": [{"label": c["label"],
+                                  "score": round(c["score"], 1),
+                                  "why": "no viable route"}
+                                 for c in cands[:i]],
+                }
+                if t["type"] == "SUPERVISE":
+                    ag.idle_reason = (
+                        "no pending tasks — factory automated; supervising"
+                        if len(cands) == 1 else
+                        "pending tasks unreachable — standing by")
+                else:
+                    ag.idle_reason = None
                 log.debug("auction resolved",
                           extra={"agent": ag.id + 1, "tick": self.tick,
                                  "task": t["type"], "score": round(t["score"], 1)})
                 return
         ag.state = "IDLE"
         ag.timer = 30
+        ag.decision_pick = None
+        ag.idle_reason = "no assignable tasks — all candidates reserved or unroutable"
         log.debug("auction idle", extra={"agent": ag.id + 1, "tick": self.tick})
 
     def try_assign(self, ag, t):

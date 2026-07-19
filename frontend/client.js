@@ -8,6 +8,7 @@ const TS = 20;
 const DIRS = [[1,0],[-1,0],[0,1],[0,-1]];
 const T = { EMPTY:0, ORE:1, ROCK:2, BELT:3, MINER:4, ASM:5 };
 const ORE_PER_TILE = 400, CRAFT_TICKS = 40, CARGO_CAP = 10;
+const CRAFT_IN = 2, N_PATCHES = 5;
 const AGENT_COLORS = ["#35d0e0", "#b07af0", "#a4e05a"];
 
 const cv = document.getElementById("cv");
@@ -30,7 +31,7 @@ function connect() {
   ws.onmessage = e => {
     const msg = JSON.parse(e.data);
     if (msg.type === "world") { world = msg; $("seedLbl").textContent = msg.seed; }
-    else if (msg.type === "state") { state = msg; updateHUD(); }
+    else if (msg.type === "state") { state = msg; updateHUD(); updateTimeline(msg); updateGoals(msg); updateNarration(msg); }
   };
 }
 function setConn(ok) {
@@ -176,6 +177,155 @@ function hexA(hex, a) {
   return `rgba(${r},${g},${b},${a})`;
 }
 
+/* ---------------- decision timeline ----------------
+   Task lifecycle view derived purely from data the server already sends:
+   new event-log entries (deduped via log_seq) are classified into lifecycle
+   stages, and each agent's decision_pick (deduped via its tick) becomes an
+   AUCTION entry. No extra backend traffic. */
+
+const TL_RULES = [
+  [/break detected/,           "CREATED",  "tag-created"],
+  [/FAULT INJECTED/,           "FAULT",    "tag-fault"],
+  [/task aborted/,             "ABORT",    "tag-fault"],
+  [/dispatched to belt fault/, "ASSIGNED", "tag-selected"],
+  [/mining ore at/,            "ASSIGNED", "tag-selected"],
+  [/hauling \d+ ore/,          "ASSIGNED", "tag-selected"],
+  [/blueprint approved/,       "ASSIGNED", "tag-selected"],
+  [/belt repaired/,            "DONE",     "tag-done"],
+  [/delivered \d+ ore/,        "DONE",     "tag-done"],
+  [/automation line online/,   "DONE",     "tag-done"],
+];
+
+let tlEntries = [];
+let tlSeq = 0;                  // last consumed log_seq
+let tlPicks = new Map();        // agent id -> tick of last seen decision_pick
+let tlDirty = false;
+
+function timelinePush(t, tag, cls, msg) {
+  tlEntries.push({ t, tag, cls, msg });
+  if (tlEntries.length > 120) tlEntries.splice(0, tlEntries.length - 120);
+  tlDirty = true;
+}
+
+function updateTimeline(s) {
+  if (s.log_seq < tlSeq) {      // run reset or snapshot load: start fresh
+    tlEntries = []; tlPicks.clear(); tlDirty = true;
+  }
+  for (const ag of s.agents) {
+    const p = ag.decision_pick;
+    if (!p || tlPicks.get(ag.id) === p.tick) continue;
+    tlPicks.set(ag.id, p.tick);
+    // supervising at rank 0 is the constant "nothing to do" case — logging
+    // it every idle cycle would drown the real decisions
+    if (p.type === "SUPERVISE" && p.rank === 0) continue;
+    timelinePush(p.tick, "AUCTION", "tag-auction",
+      `A${ag.id+1} won auction: ${p.label} (score ${p.score}) — ${p.reason}`);
+  }
+  const fresh = Math.min(s.log_seq - tlSeq, s.log.length);
+  if (fresh > 0) {
+    for (const l of s.log.slice(-fresh)) {
+      for (const [re, tag, cls] of TL_RULES) {
+        if (re.test(l.msg)) { timelinePush(l.t, tag, cls, l.msg); break; }
+      }
+    }
+  }
+  tlSeq = s.log_seq;
+  if (!tlDirty) return;         // only touch the DOM when something changed
+  tlDirty = false;
+  const el = $("timeline");
+  el.innerHTML = tlEntries.map(e =>
+    `<div><span class="t">[${String(Math.floor(e.t/30)).padStart(4,"0")}s]</span>` +
+    `<span class="tag ${e.cls}">${e.tag}</span><span>${e.msg}</span></div>`).join("");
+  el.scrollTop = el.scrollHeight;
+}
+
+/* ---------------- factory goals ----------------
+   The factory's current objectives, derived entirely from state the server
+   already sends: faults -> repairs, assembler buffers -> production demand,
+   miner count -> automation progress, agent states -> idle capacity. */
+
+function updateGoals(s) {
+  const rows = [];
+  for (const f of s.faults)
+    rows.push(`<div class="goal g-red">&#9888; Repair belt at (${f.x},${f.y}) ` +
+              `&mdash; down ${((s.tick - f.created) / 30).toFixed(1)}s</div>`);
+  for (const a of s.assemblers)
+    if (a.buffer < CRAFT_IN)
+      rows.push(`<div class="goal g-amber">&#9654; Deliver ore to assembler at ` +
+                `(${a.x},${a.y}) &mdash; buffer ${a.buffer}/${CRAFT_IN}</div>`);
+  if (s.stats.miners < N_PATCHES)
+    rows.push(`<div class="goal">&#9654; Automate remaining ore patches ` +
+              `&mdash; ${s.stats.miners}/${N_PATCHES} lines built</div>`);
+  else
+    rows.push(`<div class="goal g-green">&#10003; All ${N_PATCHES} ore patches automated</div>`);
+  rows.push(`<div class="goal">&#9654; Sustain gear production &mdash; ` +
+            `${s.stats.rate}/min, ${s.stock.gears} in stock</div>`);
+  const idle = s.agents.filter(a => a.state === "IDLE").length;
+  if (idle)
+    rows.push(`<div class="goal g-dim">&#8226; ${idle}/${s.agents.length} agents ` +
+              `supervising &mdash; no higher-value work pending</div>`);
+  $("goals").innerHTML = rows.join("");
+}
+
+/* ---------------- narration ----------------
+   A plain-language line every 4 simulated seconds, template-filled from the
+   same state the panels use — deterministic per seed, zero backend cost.
+   Keyed to sim ticks (not wall clock) so it is reproducible and speed-aware. */
+
+const NARR_EVERY = 120;      // ticks between narration updates (4 sim-seconds)
+let narrLastTick = -1;
+
+function agentWhy(ag) {
+  const p = ag.decision_pick;
+  return p ? ` (auction score ${p.score} — ${p.reason})` : "";
+}
+
+function composeNarration(s) {
+  const f = s.faults[0];
+  if (f) {
+    const rep = s.agents.find(a => a.task.startsWith("repair"));
+    if (rep) {
+      const doing = rep.state === "REPAIR"
+        ? "is repairing it on site"
+        : `is en route — ${rep.path.length} tiles to go`;
+      return `Integrity scan flagged a belt break at (${f.x},${f.y}). ` +
+             `A${rep.id + 1} won the repair auction${agentWhy(rep)} and ${doing}.`;
+    }
+    return `Belt break detected at (${f.x},${f.y}) — no agent free yet; ` +
+           `repair will outscore other tasks at the next auction.`;
+  }
+  const lines = [];
+  for (const ag of s.agents) {
+    const t = ag.task;
+    if (t.startsWith("build"))
+      lines.push(`A${ag.id + 1} is constructing an automation line ` +
+                 `(placement ${t.slice(6)})${agentWhy(ag)}.`);
+    else if (t.startsWith("haul"))
+      lines.push(`A${ag.id + 1} is delivering ${ag.cargo} ore to an assembler` +
+                 (ag.path.length ? ` — ${ag.path.length} tiles to go` : "") +
+                 `${agentWhy(ag)}.`);
+    else if (t.startsWith("mine"))
+      lines.push(`A${ag.id + 1} is mining ore at ${t.slice(5)} — the nearest ` +
+                 `unreserved deposit${agentWhy(ag)}.`);
+  }
+  if (!lines.length) {
+    return s.stats.miners >= N_PATCHES
+      ? `Factory fully automated — ${s.stats.miners} miners feeding ` +
+        `${s.stats.n_assemblers} assemblers at ${s.stats.rate} gears/min; ` +
+        `all agents supervising until new work appears.`
+      : `No transport or repair demand right now — agents standing by ` +
+        `(${s.stats.rate} gears/min).`;
+  }
+  return lines[Math.floor(s.tick / NARR_EVERY) % lines.length];
+}
+
+function updateNarration(s) {
+  if (narrLastTick >= 0 && s.tick >= narrLastTick &&
+      s.tick - narrLastTick < NARR_EVERY) return;
+  narrLastTick = s.tick;
+  $("narration").textContent = composeNarration(s);
+}
+
 /* ---------------- HUD ---------------- */
 
 const STATE_ABBR = { PLAN:"PLAN", MOVE:"MOVE", MINE:"MINE", DELIVER:"HAUL",
@@ -191,15 +341,30 @@ function updateHUD() {
      </button>`).join("");
 
   $("selLbl").textContent = "A" + (selAgent + 1);
-  const d = s.agents[selAgent].decision;
+  const agSel = s.agents[selAgent];
+  const d = agSel.decision;
+  const pick = agSel.decision_pick;
   if (d.length) {
     const max = Math.max(...d.map(x => x.score), 1);
-    $("utilBox").innerHTML = d.map((x, i) =>
-      `<div class="util-row ${i===0?'win':''}">
+    const winIdx = pick ? pick.rank : 0;
+    let html = d.map((x, i) =>
+      `<div class="util-row ${i===winIdx?'win':''}">
          <span class="lbl">${x.label}</span>
          <span class="ubar"><div style="width:${Math.max(0, x.score/max*100)}%"></div></span>
          <span class="num">${x.score.toFixed(0)}</span>
        </div>`).join("");
+    if (pick) {
+      html += `<div class="pick-why"><span class="k">CHOSEN:</span> ` +
+              `<span class="win-lbl">${pick.label}</span> &mdash; ${pick.reason}` +
+              pick.rejected.map(r =>
+                `<br><span class="k">PASSED OVER:</span> ${r.label} ` +
+                `(${r.score}) &mdash; ${r.why}`).join("") +
+              `</div>`;
+    }
+    if (agSel.idle_reason) {
+      html += `<div class="pick-why idle-why">${agSel.idle_reason}</div>`;
+    }
+    $("utilBox").innerHTML = html;
   }
 
   $("hGears").textContent = s.stock.gears;
