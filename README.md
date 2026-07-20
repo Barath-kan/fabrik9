@@ -101,6 +101,12 @@ both — but not bit-identical to each other (A* tie-breaking and shuffle order
 differ by language). Honest claim: each implementation is deterministic;
 cross-language parity is at the outcome level.
 
+**Explainability by construction.** The decision trace, decision tree, timeline,
+factory goals, narration, and tile inspector never fabricate rationale — every
+explanation shown traces to something the planner actually computed. The formal
+design rule, its three fidelity tiers, and what is deliberately deferred are
+documented in **[EXPLAINABILITY.md](EXPLAINABILITY.md)**.
+
 ## Testing
 
 ```bash
