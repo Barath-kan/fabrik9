@@ -219,8 +219,10 @@ function updateTimeline(s) {
     // supervising at rank 0 is the constant "nothing to do" case — logging
     // it every idle cycle would drown the real decisions
     if (p.type === "SUPERVISE" && p.rank === 0) continue;
+    const contest = p.contested
+      ? ` — claimed over ${rivalNames(p)} (same-tick contest)` : "";
     timelinePush(p.tick, "AUCTION", "tag-auction",
-      `A${ag.id+1} won auction: ${p.label} (score ${p.score}) — ${p.reason}`);
+      `A${ag.id+1} won auction: ${p.label} (score ${p.score}) — ${p.reason}${contest}`);
   }
   const fresh = Math.min(s.log_seq - tlSeq, s.log.length);
   if (fresh > 0) {
@@ -279,6 +281,11 @@ let narrLastTick = -1;
 function agentWhy(ag) {
   const p = ag.decision_pick;
   return p ? ` (auction score ${p.score} — ${p.reason})` : "";
+}
+
+// "A2" / "A1, A3" — the rivals a contested pick beat, for display.
+function rivalNames(pick) {
+  return pick.contested_with.map(i => "A" + (i + 1)).join(", ");
 }
 
 function composeNarration(s) {
@@ -377,6 +384,10 @@ function updateHUD() {
            <span class="tscore">${n.score.toFixed(1)}</span>
            <div class="tverdict">${n.verdict}</div>
          </div>`).join("") + `</div>`;
+    if (pick && pick.contested) {
+      html += `<div class="pick-why contest-note">A${agSel.id + 1} claimed this ` +
+              `over ${rivalNames(pick)} — same-tick contest, won by processing order</div>`;
+    }
     if (agSel.idle_reason) {
       html += `<div class="pick-why idle-why">${agSel.idle_reason}</div>`;
     }

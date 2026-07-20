@@ -79,6 +79,11 @@ class Simulation:
         self.lines = []
         self.faults = []
         self.occupied = set()
+        # Same-tick contest bookkeeping (transient, never serialized): which
+        # reservation keys each agent ranked during the current tick's
+        # auctions. Read-only explainability metadata — see run_auction.
+        self._ranked_tick = -1
+        self._ranked_keys = {}
         if _skip_world:
             return
 
@@ -296,6 +301,20 @@ class Simulation:
         cands = sorted(self.candidate_tasks(ag), key=lambda t: -t["score"])
         ag.last_decision = [{"label": t["label"], "score": t["score"]}
                             for t in cands[:4]]
+        # Same-tick contest bookkeeping. Record which reservation keys this
+        # agent ranked (the visible top-4, matching last_decision) so a later
+        # agent claiming one of them this tick can be flagged as contested.
+        # Record-only, like decision_pick itself: no branch of the auction
+        # reads this, no RNG is consumed, so outcomes — and the determinism
+        # fingerprint — are untouched.
+        if self._ranked_tick != self.tick:
+            self._ranked_tick = self.tick
+            self._ranked_keys = {}
+        reserved_at_start = set(self.reserved)
+        for t in cands[:4]:
+            rk = self.r_key(t)
+            if rk is not None:
+                self._ranked_keys.setdefault(rk, []).append(ag.id)
         log.debug("auction start", extra={"agent": ag.id + 1, "tick": self.tick,
                                           "candidates": len(cands)})
         for i, t in enumerate(cands):
@@ -313,6 +332,17 @@ class Simulation:
                                   "why": "no viable route"}
                                  for c in cands[:i]],
                 }
+                # Contest check: the claimed key was free when this auction
+                # started, yet an earlier-processed agent ranked it this same
+                # tick — both wanted it, and this one got it. Pure readout of
+                # the registry above; nothing downstream reads these fields.
+                rk = self.r_key(t)
+                if rk is not None and rk not in reserved_at_start:
+                    rivals = [a for a in self._ranked_keys.get(rk, ())
+                              if a != ag.id]
+                    if rivals:
+                        ag.decision_pick["contested"] = True
+                        ag.decision_pick["contested_with"] = rivals
                 if t["type"] == "SUPERVISE":
                     ag.idle_reason = (
                         "no pending tasks — factory automated; supervising"

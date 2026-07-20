@@ -8,7 +8,7 @@ Run: python -m pytest tests/ -q
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from app.sim.core import Simulation
+from app.sim.core import Simulation, Agent
 from app.sim import pathfinding
 from app.config import T, COLS, ROWS, DIRS, HQ
 
@@ -134,6 +134,26 @@ def test_targeted_fault_leaves_random_rng_stream_untouched():
     result = sim.inject_fault(belt["x"], belt["y"])
     assert result["ok"] is True
     assert sim.sim_seed == seed_before
+
+
+def test_same_tick_contest_is_recorded_on_the_claimer():
+    """A1 (processed first) ranks the repair but its full cargo makes DELIVER
+    (score 999) win; A2 then claims the repair in the same tick. The claimer's
+    decision_pick must carry contested=True naming A1 — and the flag must be
+    absent when there is no rival."""
+    sim = blank_sim()
+    sim.faults.append({"x": 12, "y": 10, "dir": 0, "created": 0})
+    a0, a1 = Agent(0, 10, 10), Agent(1, 14, 10)
+    a0.cargo = 10                      # DELIVER outscores REPAIR for A1
+    sim.agents = [a0, a1]
+
+    sim.step()
+
+    assert a0.decision_pick["type"] == "DELIVER"
+    assert "contested" not in a0.decision_pick        # no rival ranked DELIVER
+    assert a1.decision_pick["type"] == "REPAIR"
+    assert a1.decision_pick["contested"] is True
+    assert a1.decision_pick["contested_with"] == [0]  # beat A1, by tick order
 
 
 def test_determinism():
