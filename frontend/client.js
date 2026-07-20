@@ -428,16 +428,19 @@ function updateHUD() {
 
 const tileTip = $("tileTip");
 const BELT_ARROWS = ["→", "←", "↓", "↑"];  // matches DIRS order
+const HQ = [20, 13];  // home-base assembler — a constant, not seed-generated (mirrors backend C.HQ)
 let tipHTML = "";
 
-function tileLabel(t, d, amt) {
+function tileLabel(t, d, amt, x, y) {
   switch (t) {
     case T.ORE:   return amt > 0 ? `Ore deposit — ${amt}/${ORE_PER_TILE} ore remaining`
                                  : "Ore deposit — depleted";
     case T.ROCK:  return "Rock — impassable";
     case T.BELT:  return `Belt — carries ore ${BELT_ARROWS[d]}`;
     case T.MINER: return "Miner — automated ore extraction";
-    case T.ASM:   return "Assembler — crafts gears from delivered ore";
+    case T.ASM:   return "Assembler — crafts gears from delivered ore" +
+                         (x === HQ[0] && y === HQ[1]
+                          ? " · Home base — fixed position every seed." : "");
     default:      return "Empty — walkable floor";
   }
 }
@@ -464,7 +467,7 @@ cv.addEventListener("mousemove", e => {
   tileTip.style.top = (e.clientY + 14) + "px";
   tileTip.style.display = "block";
   const [t, d, amt] = world.grid[y][x];
-  const html = `<span class="coord">(${x},${y})</span>${tileLabel(t, d, amt)}`;
+  const html = `<span class="coord">(${x},${y})</span>${tileLabel(t, d, amt, x, y)}`;
   if (html !== tipHTML) { tipHTML = html; tileTip.innerHTML = html; }
 });
 cv.addEventListener("mouseleave", hideTileTip);
