@@ -36,7 +36,9 @@ async def ws_endpoint(ws: WebSocket):
                 # log it and keep serving this client.
                 log.warning("ignored malformed client frame")
                 continue
-            _apply_control(mgr, msg)
+            reply = _apply_control(mgr, msg)
+            if reply is not None:
+                await ws.send_json(reply)
     except WebSocketDisconnect:
         pass
     except Exception:
@@ -54,7 +56,11 @@ async def ws_endpoint(ws: WebSocket):
 
 
 def _apply_control(mgr, msg):
+    """Apply one control message. Returns an optional reply dict to send back
+    to *this* client only (used for targeted-fault rejections); None means
+    nothing to reply."""
     action = msg.get("action")
+    reply = None
     if action == "pause":
         mgr.paused = True
     elif action == "resume":
@@ -63,7 +69,18 @@ def _apply_control(mgr, msg):
         v = int(msg.get("value", 1))
         mgr.speed = max(1, min(8, v))
     elif action == "inject_fault":
-        mgr.sim.inject_fault()
+        # x/y present -> a user-clicked target that must be validated and
+        # reachability-checked; absent -> the original random injection.
+        x, y = msg.get("x"), msg.get("y")
+        if x is not None and y is not None:
+            try:
+                result = mgr.sim.inject_fault(x, y)
+            except (TypeError, ValueError):
+                result = {"ok": False, "reason": "invalid coordinates"}
+            if not result.get("ok"):
+                reply = {"type": "fault_rejected", "reason": result["reason"]}
+        else:
+            mgr.sim.inject_fault()
     elif action == "chaos":
         mgr.sim.chaos_on = bool(msg.get("value"))
         mgr.sim.add_log(
@@ -72,3 +89,4 @@ def _apply_control(mgr, msg):
             "ev-warn" if mgr.sim.chaos_on else "")
     if action:
         log.debug("control action", extra={"action": action})
+    return reply

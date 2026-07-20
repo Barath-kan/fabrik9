@@ -663,7 +663,26 @@ class Simulation:
 
     # ---------------- fault system ----------------
 
-    def inject_fault(self):
+    def inject_fault(self, x=None, y=None):
+        """Sever a belt so the next integrity scan raises a repairable fault.
+
+        Two paths that must never bleed into each other:
+
+        - Random (x/y omitted): chaos mode and the untargeted button. Drawn
+          from the seeded runtime RNG; 300k+ ticks of regression prove it
+          never picks an unreachable tile, so it needs no pre-check. Returns
+          True/False, exactly as before — the deterministic fingerprint and
+          test_fault_recovery both depend on this contract being unchanged.
+        - Targeted (x, y given): a user click carries no such guarantee, so
+          the tile is validated (must be an un-faulted belt) and
+          reachability-checked (some agent must be able to path onto it)
+          before severing. Consumes no RNG, so it can never perturb the
+          random path. Returns a {"ok", "reason"} dict for the caller to
+          surface a rejection.
+        """
+        if x is not None and y is not None:
+            return self._inject_fault_at(int(x), int(y))
+
         belt_tiles = [b for L in self.lines for b in L["belts"]
                       if self.grid[b["y"]][b["x"]]["type"] == T.BELT]
         if not belt_tiles:
@@ -676,6 +695,39 @@ class Simulation:
         log.warning("fault injected",
                     extra={"fault_x": b["x"], "fault_y": b["y"], "tick": self.tick})
         return True
+
+    def _inject_fault_at(self, x, y):
+        """Validate and sever a user-targeted belt tile. Returns
+        {"ok": bool, "reason": str|None}; on any rejection the grid is left
+        untouched so no fault is ever half-created."""
+        if not self.in_bounds(x, y):
+            return {"ok": False, "reason": "off the grid"}
+        tile = self.grid[y][x]
+        if tile["type"] != T.BELT:
+            return {"ok": False, "reason": "not a belt tile"}
+        if any(f["x"] == x and f["y"] == y for f in self.faults):
+            return {"ok": False, "reason": "belt is already faulted"}
+        if not self._agent_can_reach(x, y):
+            return {"ok": False, "reason": "no agent can reach this location"}
+        tile["type"] = T.EMPTY
+        self.structure_version += 1
+        self.add_log(f"FAULT INJECTED: belt severed at ({x},{y})", "ev-warn")
+        log.warning("fault injected",
+                    extra={"fault_x": x, "fault_y": y, "tick": self.tick,
+                           "targeted": True})
+        return {"ok": True, "reason": None}
+
+    def _agent_can_reach(self, x, y):
+        """True if any agent can path onto (x, y) — the exact tile a REPAIR
+        task routes to. Reachability is cost-independent, so testing the belt
+        at its current cost gives the same answer it will have once severed
+        to empty ground."""
+        for ag in self.agents:
+            if pathfinding.astar(self, ag.x, ag.y,
+                                 lambda cx, cy: cx == x and cy == y,
+                                 (x, y), ag) is not None:
+                return True
+        return False
 
     def integrity_scan(self):
         for L in self.lines:

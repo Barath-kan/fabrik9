@@ -32,6 +32,7 @@ function connect() {
     const msg = JSON.parse(e.data);
     if (msg.type === "world") { world = msg; $("seedLbl").textContent = msg.seed; if (msg.db) $("dbLbl").textContent = msg.db.toUpperCase(); }
     else if (msg.type === "state") { state = msg; updateHUD(); updateTimeline(msg); updateGoals(msg); updateNarration(msg); }
+    else if (msg.type === "fault_rejected") { showToast("Fault rejected — " + msg.reason); }
   };
 }
 function setConn(ok) {
@@ -430,12 +431,24 @@ function tileLabel(t, d, amt) {
   }
 }
 
+// Pixel -> grid-cell conversion, shared by the hover tooltip and the
+// click-to-target fault picker so both agree exactly (accounts for the
+// canvas being CSS-scaled to fit its column).
+function eventToCell(e) {
+  const r = cv.getBoundingClientRect();
+  return {
+    x: Math.floor((e.clientX - r.left) * (cv.width / r.width) / TS),
+    y: Math.floor((e.clientY - r.top) * (cv.height / r.height) / TS),
+  };
+}
+function cellInBounds(x, y) {
+  return !!world && x >= 0 && y >= 0 && x < world.cols && y < world.rows;
+}
+
 cv.addEventListener("mousemove", e => {
   if (!world) return;
-  const r = cv.getBoundingClientRect();
-  const x = Math.floor((e.clientX - r.left) * (cv.width / r.width) / TS);
-  const y = Math.floor((e.clientY - r.top) * (cv.height / r.height) / TS);
-  if (x < 0 || y < 0 || x >= world.cols || y >= world.rows) { hideTileTip(); return; }
+  const { x, y } = eventToCell(e);
+  if (!cellInBounds(x, y)) { hideTileTip(); return; }
   tileTip.style.left = (e.clientX + 14) + "px";
   tileTip.style.top = (e.clientY + 14) + "px";
   tileTip.style.display = "block";
@@ -446,11 +459,50 @@ cv.addEventListener("mousemove", e => {
 cv.addEventListener("mouseleave", hideTileTip);
 function hideTileTip() { tileTip.style.display = "none"; }
 
+/* ---------------- targeted fault injection ----------------
+   INJECT FAULT arms a targeting mode instead of firing at random: the next
+   canvas click sends the clicked grid cell to the server, which validates
+   and reachability-checks it. Clicking the button again or pressing Escape
+   disarms without sending. The tooltip keeps working while armed (its div is
+   pointer-events:none, so clicks fall through to the canvas). */
+
+let faultArmed = false;
+
+function setFaultArmed(on) {
+  faultArmed = on;
+  const btn = $("btnFault");
+  btn.classList.toggle("armed", on);
+  btn.textContent = on ? "PICK A BELT…" : "INJECT FAULT";
+  cv.style.cursor = on ? "crosshair" : "";
+}
+
+cv.addEventListener("click", e => {
+  if (!faultArmed) return;
+  const { x, y } = eventToCell(e);
+  if (cellInBounds(x, y) && ws && ws.readyState === 1)
+    ws.send(JSON.stringify({ action: "inject_fault", x, y }));
+  setFaultArmed(false);
+});
+
+window.addEventListener("keydown", e => {
+  if (e.key === "Escape" && faultArmed) setFaultArmed(false);
+});
+
+// Brief, non-blocking notice shown when the server rejects a targeted fault.
+let toastTimer = null;
+function showToast(msg) {
+  const el = $("toast");
+  el.textContent = msg;
+  el.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove("show"), 2600);
+}
+
 /* ---------------- controls ---------------- */
 
 $("btnPause").addEventListener("click", () =>
   send(state && state.paused ? "resume" : "pause"));
-$("btnFault").addEventListener("click", () => send("inject_fault"));
+$("btnFault").addEventListener("click", () => setFaultArmed(!faultArmed));
 $("btnChaos").addEventListener("click", () =>
   send("chaos", !(state && state.chaos)));
 document.querySelectorAll(".speed button").forEach(b =>

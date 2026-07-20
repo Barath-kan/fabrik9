@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.sim.core import Simulation
 from app.sim import pathfinding
-from app.config import T, COLS, ROWS
+from app.config import T, COLS, ROWS, DIRS, HQ
 
 
 def blank_sim():
@@ -72,6 +72,68 @@ def test_fault_recovery():
     assert len(sim.faults) == 0
     assert sim.stats["faults_fixed"] == 5
     assert sim.mttr_seconds() < 10
+
+
+def test_targeted_fault_on_unreachable_belt_is_rejected():
+    """A user-clicked belt walled off by rock on all four sides can never be
+    repaired, so the targeted path must reject it and leave the tile intact —
+    not silently sever an unrecoverable fault."""
+    sim = Simulation(1337)
+    bx, by = 5, 5
+    sim.grid[by][bx] = {"type": T.BELT, "dir": 0, "amount": 0}
+    for dx, dy in DIRS:
+        sim.grid[by + dy][bx + dx]["type"] = T.ROCK
+
+    faults_before = len(sim.faults)
+    result = sim.inject_fault(bx, by)
+
+    assert result["ok"] is False
+    assert "reach" in result["reason"]
+    assert len(sim.faults) == faults_before      # no fault created
+    assert sim.grid[by][bx]["type"] == T.BELT     # tile never severed
+
+
+def test_targeted_fault_on_non_belt_is_rejected():
+    """Clicking anything that isn't a belt (here the HQ assembler) is rejected
+    before any reachability work, with the belt-tile reason."""
+    sim = Simulation(1337)
+    hx, hy = HQ
+    result = sim.inject_fault(hx, hy)
+    assert result["ok"] is False
+    assert "belt" in result["reason"]
+    assert sim.grid[hy][hx]["type"] == T.ASM
+
+
+def test_targeted_fault_on_reachable_belt_severs_and_recovers():
+    """A reachable belt tile is severed and then repaired by an agent exactly
+    like an organic fault — proving the targeted success path feeds the same
+    integrity-scan / repair loop."""
+    sim = Simulation(1337)
+    sim.run(12000)                                # build out the automation
+    belt = next(b for L in sim.lines for b in L["belts"]
+                if sim.grid[b["y"]][b["x"]]["type"] == T.BELT)
+
+    result = sim.inject_fault(belt["x"], belt["y"])
+    assert result["ok"] is True
+    assert sim.grid[belt["y"]][belt["x"]]["type"] == T.EMPTY   # severed
+
+    sim.run(2000)
+    assert len(sim.faults) == 0                    # detected and repaired
+
+
+def test_targeted_fault_leaves_random_rng_stream_untouched():
+    """The targeted path (including its reachability A*) must consume no RNG,
+    or it would perturb the seeded random-injection stream the fingerprint
+    depends on. The success call below runs the reachability check and then
+    severs, so an unchanged sim_seed covers the whole targeted code path."""
+    sim = Simulation(1337)
+    sim.run(12000)
+    belt = next(b for L in sim.lines for b in L["belts"]
+                if sim.grid[b["y"]][b["x"]]["type"] == T.BELT)
+    seed_before = sim.sim_seed
+    result = sim.inject_fault(belt["x"], belt["y"])
+    assert result["ok"] is True
+    assert sim.sim_seed == seed_before
 
 
 def test_determinism():
